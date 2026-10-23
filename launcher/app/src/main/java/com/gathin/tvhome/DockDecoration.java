@@ -26,6 +26,8 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
     private final boolean lightGlass;
     /** Padding all round the tiles equal to the gap between them (config.xml dock_even_padding). */
     private final boolean evenPadding;
+    private final boolean liquid;
+    private final Paint reflection = new Paint(Paint.ANTI_ALIAS_FLAG);
     /** The band's top and bottom the glass gradient was made for; it is remade when they move. */
     private float shaderTop = Float.NaN, shaderBottom = Float.NaN;
 
@@ -38,6 +40,14 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
      */
     DockDecoration(int dockSize, float density, boolean translucent, boolean names, int opacity, boolean lightGlass,
                    boolean evenPadding) {
+        this(dockSize, density, translucent, names, opacity, lightGlass, evenPadding, false);
+    }
+
+    DockDecoration(int dockSize, float density, boolean translucent, boolean names, int opacity, boolean lightGlass,
+                   boolean evenPadding, boolean liquid) {
+        this.liquid = liquid;
+        reflection.setStyle(Paint.Style.STROKE);
+        reflection.setStrokeWidth(density * 0.7f);
         this.dockSize = dockSize;
         this.density = density;
         this.namesRoom = names ? 22 * density : 0;
@@ -77,6 +87,7 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
     public void onDraw(@NonNull Canvas c, @NonNull RecyclerView parent, @NonNull RecyclerView.State state) {
         boolean any = false;
         int cardWidth = 0;
+        int cardHeight = 0;
         for (int i = 0; i < parent.getChildCount(); i++) {
             View child = parent.getChildAt(i);
             int pos = parent.getChildAdapterPosition(child);
@@ -89,6 +100,7 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
             float r = l + card.getWidth();
             float b = t + card.getHeight();
             cardWidth = card.getWidth();
+            cardHeight = card.getHeight();
             if (!any) {
                 rect.set(l, t, r, b);
                 any = true;
@@ -105,8 +117,15 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
         // outwards and still keeps about the band's top margin from its rounded end.
         float sidePad = 22 * density;
         float side = Math.max(0f, Math.min(sidePad, Math.min(rect.left, parent.getWidth() - rect.right) - density));
-        float radius = AppAdapter.cornerRadius(cardWidth, density);
-        if (evenPadding) {
+        float radius = liquid ? LiquidStyle.radius(cardWidth, density) : AppAdapter.cornerRadius(cardWidth, density);
+        if (liquid && dockSize == 6) {
+            // Reserve the focused envelope for every slot, keeping the dock steady as focus moves.
+            float focusScale = LiquidStyle.FOCUS_SCALE;
+            float margin = cardWidth * (18f / 250f);
+            rect.inset(-(cardWidth * (focusScale - 1f) * 0.5f + margin),
+                    -(cardHeight * (focusScale - 1f) * 0.5f + margin));
+            radius = radiusPx(radius * focusScale, margin);
+        } else if (evenPadding) {
             // The same padding on all four sides, so the band's corners are concentric with the tiles' everywhere.
             int inner = parent.getWidth() - parent.getPaddingLeft() - parent.getPaddingRight();
             float room = Math.min(rect.top, Math.min(rect.left, parent.getWidth() - rect.right)) - density;
@@ -116,17 +135,29 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
         } else {
             // dock_even_padding off: the band as before, with its fixed 26 dp corners.
             rect.inset(-side, -pad);
-            radius = 26 * density;
+            radius = (liquid ? 32 : 26) * density;
         }
         rect.bottom += namesRoom;
-        if (lightGlass && (rect.top != shaderTop || rect.bottom != shaderBottom)) {
+        if ((lightGlass || liquid) && (rect.top != shaderTop || rect.bottom != shaderBottom)) {
             // The pills' glass (pill_bg: white, 18% fading to 8%), a little fainter over this much larger area.
-            band.setShader(new LinearGradient(0, rect.top, 0, rect.bottom, 0x24FFFFFF, 0x0DFFFFFF,
+            band.setShader(new LinearGradient(0, rect.top, 0, rect.bottom, liquid ? 0x38E5EEFF : 0x24FFFFFF, liquid ? 0x16FFFFFF : 0x0DFFFFFF,
                     Shader.TileMode.CLAMP));
+            if (liquid) {
+                edge.setShader(new LinearGradient(rect.left, rect.top, rect.right, rect.bottom,
+                        new int[]{0xB3FFFFFF, 0x14FFFFFF, 0x66C9E0FF, 0x80FFFFFF}, null, Shader.TileMode.CLAMP));
+                reflection.setShader(new LinearGradient(rect.left, rect.top, rect.right, rect.top,
+                        new int[]{0x00FFFFFF, 0xA6FFFFFF, 0x00FFFFFF}, null, Shader.TileMode.CLAMP));
+            }
             shaderTop = rect.top;
             shaderBottom = rect.bottom;
         }
         c.drawRoundRect(rect, radius, radius, band);
         c.drawRoundRect(rect, radius, radius, edge);
+        if (liquid) {
+            c.save();
+            c.clipRect(rect.left, rect.top, rect.right, rect.top + 2 * density);
+            c.drawRoundRect(rect, radius, radius, reflection);
+            c.restore();
+        }
     }
 }

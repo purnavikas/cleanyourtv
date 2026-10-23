@@ -19,6 +19,26 @@ final class HeroArt {
     private HeroArt() {
     }
 
+    /** A neutral, cached wallpaper blur; unlike app artwork this never boosts saturation. */
+    static Bitmap soften(Bitmap source) {
+        Bitmap small = Bitmap.createBitmap(96, 54, Bitmap.Config.ARGB_8888);
+        float scale = Math.max(96f / source.getWidth(), 54f / source.getHeight());
+        float w = source.getWidth() * scale, h = source.getHeight() * scale;
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+        Canvas canvas = new Canvas(small);
+        canvas.drawBitmap(source, null, new android.graphics.RectF((96 - w) / 2, (54 - h) / 2,
+                (96 + w) / 2, (54 + h) / 2), paint);
+        int[] pixels = new int[96 * 54];
+        small.getPixels(pixels, 0, 96, 0, 0, 96, 54);
+        for (int i = 0; i < 3; i++) {
+            pixels = boxBlur(pixels, 96, 54, 1, true);
+            pixels = boxBlur(pixels, 96, 54, 1, false);
+        }
+        small.setPixels(pixels, 0, 96, 0, 0, 96, 54);
+        canvas.drawColor(0x40000000);
+        return small;
+    }
+
     /** The softened artwork, about 5 KB; null when there is nothing to draw. */
     static Bitmap from(Drawable live) {
         if (live == null) return null;

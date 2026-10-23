@@ -1,0 +1,7 @@
+<resources>
+    <string name="cc_controls">Controls</string>
+    <string name="cc_screensaver">Screen saver</string>
+    <string name="cc_bluetooth">Bluetooth</string>
+    <string name="cc_accessibility">Accessibility</string>
+    <string name="cc_search">Search</string>
+</resources>

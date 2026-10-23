@@ -16,7 +16,7 @@
 
     <!-- Cinematic top shelf (cinematic_home): the focused dock app's artwork, a few pixels across and
          stretched over the screen, which softens it like a blur without the cost of one. Hidden otherwise. -->
-    <ImageView
+    <com.gathin.tvhome.LiquidBackdropView
         android:id="@+id/heroArt"
         android:layout_width="match_parent"
         android:layout_height="match_parent"

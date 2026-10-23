@@ -22,6 +22,16 @@ public class GlassView extends View {
     private final RectF rect = new RectF();
     private final float density;
     private float radius;
+    private boolean liquid;
+
+    void setLiquid(boolean enabled) {
+        liquid = enabled;
+        if (enabled) {
+            rim.setStrokeWidth(0.8f * density);
+            rim.setColor(0xCFFFFFFF);
+        }
+        invalidate();
+    }
     /** Glow colour as 0xRRGGBB: white normally, a festival's accent (diya gold) while a festive skin is on. */
     private int glowRgb = 0xFFFFFF;
     /** Glow strength: the white glow stays faint, a coloured one needs more alpha to read as warm light. */
@@ -43,6 +53,13 @@ public class GlassView extends View {
 
     /** Tints the rim and the outer glow; 0 restores the plain white glass. */
     void setAccent(int argb) {
+        if (liquid) {
+            glowRgb = argb == 0 ? 0xDCEAFF : argb & 0xFFFFFF;
+            glowAlpha = 0x28;
+            rim.setColor(0xCFFFFFFF);
+            invalidate();
+            return;
+        }
         if (argb == 0) {
             glowRgb = 0xFFFFFF;
             glowAlpha = 0x30;
@@ -66,8 +83,8 @@ public class GlassView extends View {
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        fill.setShader(new LinearGradient(0, 0, 0, h, 0x3DFFFFFF, 0x12FFFFFF, Shader.TileMode.CLAMP));
-        specular.setShader(new LinearGradient(0, 0, 0, h * 0.45f, 0x66FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
+        fill.setShader(new LinearGradient(0, 0, 0, h, liquid ? 0x12FFFFFF : 0x3DFFFFFF, liquid ? 0x03FFFFFF : 0x12FFFFFF, Shader.TileMode.CLAMP));
+        specular.setShader(new LinearGradient(0, 0, 0, h * 0.45f, liquid ? 0x38FFFFFF : 0x66FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
     }
 
     @Override

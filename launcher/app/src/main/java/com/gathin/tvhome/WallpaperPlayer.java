@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.os.Environment;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -29,7 +30,9 @@ import java.util.concurrent.Executors;
 final class WallpaperPlayer {
     private final FrameLayout root;
     private final ImageView image;
+    private final ImageView softImage;
     private final List<File> files;
+    private final File pictures;
     private final long interval;
     private final String order;
     private final SharedPreferences preferences;
@@ -42,7 +45,8 @@ final class WallpaperPlayer {
     /** wallpaper_dim as an ARGB black, painted into each picture once instead of a full-screen shade view. */
     private final int dimColor;
     /** The picture on screen, released once the next one has been drawn. */
-    private Bitmap current;
+    private Frame current;
+    private android.animation.ValueAnimator blurAnimation;
     private boolean active;
     private boolean closed;
     private boolean loading;
@@ -55,6 +59,9 @@ final class WallpaperPlayer {
         this.root = root;
         files = new ArrayList<>(config.wallpapers);
         interval = config.wallpaperRotationMinutes * 60_000L;
+        pictures = LiquidStyle.enabled(context) && interval > 0 && config.wallpaperEnabled
+                ? Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) : null;
+        refreshPictures();
         bitmapConfig = config.wallpaperTrueColor ? Bitmap.Config.ARGB_8888 : Bitmap.Config.RGB_565;
         // The dim is painted into the picture (decode), so no full-screen shade layer is drawn on every frame.
         dimColor = config.wallpaperDim > 0 ? (config.wallpaperDim * 255 / 100) << 24 : 0;
@@ -70,15 +77,24 @@ final class WallpaperPlayer {
         DisplayMetrics metrics = context.getResources().getDisplayMetrics();
         width = metrics.widthPixels;
         height = metrics.heightPixels;
-        image = new ImageView(context);
+        image = LiquidStyle.enabled(context) ? new LiquidBackdropView(context, null) : new ImageView(context);
+        if (image instanceof LiquidBackdropView)
+            ((LiquidBackdropView) image).setMotion(config.animations && !config.reducedMotion);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
         image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        softImage = LiquidStyle.enabled(context) ? new LiquidBackdropView(context, null) : null;
+        if (softImage != null) {
+            ((LiquidBackdropView) softImage).setMotion(config.animations && !config.reducedMotion);
+            softImage.setAlpha(0f);
+            softImage.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        }
         names = config.wallpaperCaptions && config.wallpaperEnabled && !files.isEmpty()
                 ? WallpaperCaptions.read(files.get(0).getParentFile()) : Collections.emptyMap();
         caption = names.isEmpty() ? null : makeCaption(context, root);
         if (config.wallpaperEnabled && !files.isEmpty()) {
             root.addView(image, 0, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (softImage != null) root.addView(softImage, 1, new FrameLayout.LayoutParams(-1, -1));
             showFirst();
         }
     }
@@ -93,7 +109,7 @@ final class WallpaperPlayer {
         File first = WallpaperRotation.find(files, previous);
         if (first == null) first = WallpaperRotation.pick(files, previous, order, random);
         while (first != null) {
-            Bitmap bitmap = decode(first);
+            Frame bitmap = decode(first);
             if (bitmap != null) {
                 show(bitmap);
                 // The picture covers the whole screen: the root's plain colour under it is overdraw.
@@ -124,10 +140,27 @@ final class WallpaperPlayer {
         active = false;
         closed = true;
         decoder.shutdownNow();
+        if (blurAnimation != null) blurAnimation.cancel();
+    }
+
+    Bitmap glassBackdrop() { return current == null ? null : current.blur; }
+
+    void setGridExpanded(boolean expanded, boolean animate) {
+        if (softImage == null) return;
+        if (blurAnimation != null) blurAnimation.cancel();
+        float target = expanded ? 1f : 0f;
+        if (!animate) { softImage.setAlpha(target); return; }
+        blurAnimation = android.animation.ValueAnimator.ofFloat(softImage.getAlpha(), target);
+        blurAnimation.setDuration(650);
+        blurAnimation.setInterpolator(LiquidStyle.EASE);
+        blurAnimation.addUpdateListener(a -> softImage.setAlpha((float) a.getAnimatedValue()));
+        blurAnimation.start();
     }
 
     void update() {
-        if (!active || closed || loading || files.isEmpty()) return;
+        if (!active || closed || loading) return;
+        refreshPictures();
+        if (files.isEmpty()) return;
         String previous = preferences.getString("image", "");
         File selected = WallpaperRotation.find(files, previous);
         long changed = preferences.getLong("changed", 0);
@@ -138,7 +171,7 @@ final class WallpaperPlayer {
         File next = selected;
         loading = true;
         decoder.execute(() -> {
-            Bitmap bitmap = decode(next);
+            Frame bitmap = decode(next);
             root.post(() -> {
                 loading = false;
                 if (closed || !active) {
@@ -160,6 +193,17 @@ final class WallpaperPlayer {
                 }
             });
         });
+    }
+
+    /** Rescan on Home entry and each minute so files added to Pictures join without a restart. */
+    private void refreshPictures() {
+        if (pictures == null) return;
+        List<File> found = WallpaperRotation.images(pictures);
+        if (!found.equals(files)) {
+            files.clear();
+            files.addAll(found);
+            Log.i("TvHome.Wallpaper", "Pictures collection: " + files.size() + " images");
+        }
     }
 
     /**
@@ -219,14 +263,21 @@ final class WallpaperPlayer {
     }
 
     /** Puts a picture on screen and releases the previous one after a frame has drawn the new one. */
-    private void show(Bitmap bitmap) {
-        Bitmap old = current;
+    private void show(Frame bitmap) {
+        Frame old = current;
         current = bitmap;
-        image.setImageBitmap(bitmap);
+        image.setImageBitmap(bitmap.image);
+        if (softImage != null) softImage.setImageBitmap(bitmap.blur);
         if (old != null && old != bitmap) image.postDelayed(old::recycle, 500);
     }
 
-    private Bitmap decode(File file) {
+    private static final class Frame {
+        final Bitmap image, blur;
+        Frame(Bitmap image, Bitmap blur) { this.image = image; this.blur = blur; }
+        void recycle() { image.recycle(); if (blur != null) blur.recycle(); }
+    }
+
+    private Frame decode(File file) {
         try {
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
@@ -248,12 +299,13 @@ final class WallpaperPlayer {
             Bitmap decoded = BitmapFactory.decodeFile(file.getPath(), options);
             if (decoded == null) return null;
             if (dimColor != 0) new Canvas(decoded).drawColor(dimColor);
+            Bitmap blur = softImage == null ? null : HeroArt.soften(decoded);
             // One copy in GPU memory instead of a software bitmap plus its texture; the decode stays off the UI
             // thread for rotations, and Home's return no longer uploads 4-8 MB to the GPU.
             Bitmap gpu = decoded.copy(Bitmap.Config.HARDWARE, false);
-            if (gpu == null) return decoded;
+            if (gpu == null) return new Frame(decoded, blur);
             decoded.recycle();
-            return gpu;
+            return new Frame(gpu, blur);
         } catch (Exception | OutOfMemoryError failure) {
             return null;
         }

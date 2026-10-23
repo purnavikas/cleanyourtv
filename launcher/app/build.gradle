@@ -12,7 +12,11 @@ android {
         minSdk 26
         targetSdk 34
         versionCode 7
-        versionName '2.6'
+        versionName '2.6-tvos27.preview'
+        // Preview has no HOME category and cannot replace the working launcher.
+        manifestPlaceholders = [launcherHomeCategory: providers.gradleProperty('launcherPreview').isPresent()
+                && !providers.gradleProperty('launcherHome').isPresent()
+                ? 'com.gathin.tvhome.category.PREVIEW' : 'android.intent.category.HOME']
     }
 
     buildTypes {
@@ -20,7 +24,9 @@ android {
             // R8 strips and optimises the code (AndroidX included): smaller APK, faster start on a slow TV CPU.
             minifyEnabled true
             shrinkResources true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+            // Keep the growing preview within the APK budget; retain its R8 mapping for diagnostics.
+            if (!providers.gradleProperty('launcherPreview').isPresent()) proguardFile 'proguard-rules.pro'
             // Sideloaded over ADB, never published: sign with the debug key so it installs over a debug build.
             signingConfig signingConfigs.debug
         }

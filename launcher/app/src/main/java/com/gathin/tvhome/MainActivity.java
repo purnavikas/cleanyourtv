@@ -2,6 +2,8 @@ package com.gathin.tvhome;
 
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
+import android.accounts.Account;
+import android.accounts.AccountManager;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.ActivityNotFoundException;
@@ -54,6 +56,7 @@ import android.text.style.ForegroundColorSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.SoundEffectConstants;
 import android.view.ViewGroup;
@@ -96,6 +99,7 @@ import java.util.Set;
 public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private static final int LAUNCHER_SETTINGS_REQUEST = 42;
+    private static final int PROFILE_ACCOUNT_REQUEST = 43;
     /** Sent by QuickSettingsActivity: open Launcher settings from here so Home rebuilds when they close. */
     static final String ACTION_LAUNCHER_SETTINGS = "com.gathin.tvhome.action.LAUNCHER_SETTINGS";
     /** The system input switcher, forwarded here by InputsRequestActivity while handle_view_inputs is on. */
@@ -133,6 +137,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private RecyclerView grid;
     private FrameLayout root;
     private WallpaperPlayer wallpaperPlayer;
+    private boolean liquidGridExpanded;
+    private int liquidGridBottomPadding;
+    private float gridSwipeX, gridSwipeY;
+    private boolean gridSwipeConsumed;
     private GlassView glass;
     private View ambient;
     private TextView heroName;
@@ -348,6 +356,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         density = getResources().getDisplayMetrics().density;
         // config.xml, overlaid by config.json from a pushed theme (see Config and tools/theme.sh).
         Config cfg = Config.load(this);
+        boolean liquidGlass = LiquidStyle.enabled(this);
         // restore_key_services: after a force stop, put back the remote's accessibility helpers that Android took
         // off the list (needs WRITE_SECURE_SETTINGS, granted by build-and-install with RESTORE_KEY_SERVICES=1).
         if (cfg.restoreKeyServices) ServiceRepair.restore(this);
@@ -387,12 +396,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         sky = findViewById(R.id.sky);
         sky.setIntensity(cfg.skyIntensity);
         glass = findViewById(R.id.glass);
+        glass.setLiquid(liquidGlass);
         if (festive) glass.setAccent(festival.accentColor());
         ambient = findViewById(R.id.ambient);
         // The glow is one bitmap, so its alpha can be applied while drawing it. Otherwise every frame of
         // a fade renders it into a full-screen offscreen buffer first.
         ambient.forceHasOverlappingRendering(false);
-        ambientGlow = cfg.ambientGlow;
+        ambientGlow = cfg.ambientGlow && !liquidGlass;
         appGlow = cfg.appGlow;
         if (!ambientGlow) ambient.setVisibility(View.GONE);
         heroName = findViewById(R.id.heroName);
@@ -403,6 +413,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         heroMeta = findViewById(R.id.heroMeta);
         heroDots = findViewById(R.id.heroDots);
         heroArt = findViewById(R.id.heroArt);
+        ((LiquidBackdropView) heroArt).setMotion(animations && !reducedMotion);
         cinematic = cfg.cinematicHome;
         glowStyle = cfg.glowStyle;
         if (cinematic) setUpCinematicShelf();
@@ -445,6 +456,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         hiddenApps = new HashSet<>(cfg.hiddenApps);
 
         grid = findViewById(R.id.grid);
+        liquidGridBottomPadding = grid.getPaddingBottom();
+        if (liquidGlass && COLUMNS == 6) {
+            // The focused dock extends beyond the grid's layout bounds at both ends.
+            ((ViewGroup) grid.getParent()).setClipChildren(false);
+            ((ViewGroup) grid.getParent()).setClipToPadding(false);
+            View outer = (View) grid.getParent().getParent();
+            int side = Math.round(getResources().getDisplayMetrics().widthPixels * (66f / 1920f));
+            outer.setPadding(side, outer.getPaddingTop(), side, outer.getPaddingBottom());
+            grid.setPadding(0, grid.getPaddingTop(), 0, grid.getPaddingBottom());
+        }
         rtlAppGrid = getResources().getBoolean(R.bool.rtl_app_grid);
         // Mirror only the app grid; the header and other locales keep their own layouts.
         grid.setLayoutManager(new GridLayoutManager(this, COLUMNS) {
@@ -478,7 +499,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 else if (bottom <= getHeight()) dy = 0;
                 else dy = Math.min(top, bottom - limitBottom);
                 if (dy == 0) return false;
-                if (immediate || reducedMotion || !animations) parent.scrollBy(0, dy);
+                if (reducedMotion || !animations || immediate && !LiquidStyle.enabled(MainActivity.this)) parent.scrollBy(0, dy);
+                else if (LiquidStyle.enabled(MainActivity.this))
+                    parent.smoothScrollBy(0, dy, LiquidStyle.EASE, 520);
                 else parent.smoothScrollBy(0, dy);
                 return true;
             }
@@ -500,7 +523,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             public void onChildViewDetachedFromWindow(@NonNull View v) {
             }
         });
-        if (dockRow) grid.addItemDecoration(new DockDecoration(COLUMNS, density, cinematic, cfg.alwaysShowNames, cfg.dockOpacity, cfg.dockGlass, cfg.dockEvenPadding));
+        if (dockRow) grid.addItemDecoration(new DockDecoration(COLUMNS, density, cinematic, cfg.alwaysShowNames, cfg.dockOpacity, cfg.dockGlass, cfg.dockEvenPadding, liquidGlass));
         // Reduced motion: the tiles are simply there, with no entrance (reloadApps skips it there too).
         if (animations && !reducedMotion) {
             grid.setLayoutAnimation(new LayoutAnimationController(
@@ -533,6 +556,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (MainActivity.this.dockRow && cfg.dockTitle && rowsBelowDock > 0) want = Math.max(want, (int) (AppAdapter.TITLE_ROOM_DP * density));
             // No dock to push down: the grid starts at the top, with room for the first row's zoom and glass.
             if (!MainActivity.this.dockRow) want = (int) (AppAdapter.TOP_ROOM_DP * density);
+            if (liquidGlass && COLUMNS == 6 && MainActivity.this.dockRow && rowsBelowDock == 0) {
+                int[] location = new int[2];
+                grid.getLocationOnScreen(location);
+                want = Math.max(0, Math.round(getResources().getDisplayMetrics().heightPixels * (824f / 1080f))
+                        - location[1] - Math.round(14f * density));
+            }
             if (grid.getPaddingTop() != want) {
                 grid.setPadding(grid.getPaddingLeft(), want, grid.getPaddingRight(), grid.getPaddingBottom());
             }
@@ -568,6 +597,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         for (SpringAnimation s : new SpringAnimation[]{springX, springY}) {
             if (reducedMotion) {
                 Motion.reduce(s);
+            } else if (liquidGlass) {
+                s.setSpring(new SpringForce().setStiffness(LiquidStyle.FOCUS_STIFFNESS)
+                        .setDampingRatio(LiquidStyle.FOCUS_DAMPING));
+                s.setMinimumVisibleChange(0.6f);
             } else if (!focusOvershoot) {
                 // Critically damped: glides straight onto the tile without swinging past it.
                 s.setSpring(new SpringForce().setStiffness(advancedEffects ? 520f : 440f).setDampingRatio(1f));
@@ -647,6 +680,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                 // Back to the dock tile Up came from, not wherever the focus finder lands.
                 focusTile(lastFocused % COLUMNS);
+                if (LiquidStyle.enabled(this) && dockRow) expandLiquidGrid();
                 return true;
             }
             int firstButton = btnInputs.getVisibility() == View.VISIBLE ? R.id.btnInputs : firstTopButton().getId();
@@ -660,8 +694,67 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         btnSettings.setOnKeyListener(pillKeys);
         btnReorder.setOnKeyListener(pillKeys);
         btnLibraryTop.setOnKeyListener(pillKeys);
+        if (liquidGlass) {
+            for (View button : new View[]{btnInputs, btnWifi, btnReorder, btnLibraryTop, btnSettings})
+                button.setBackground(new LiquidSurface(density, true));
+            // Keep the old header's anchor for deterministic Up navigation, but remove its visible content.
+            LinearLayout header = findViewById(R.id.leftBlock);
+            header.setMinimumHeight((int) (36 * density));
+            ViewGroup.LayoutParams headerSize = header.getLayoutParams();
+            headerSize.height = (int) (26 * density);
+            header.setLayoutParams(headerSize);
+            header.setVisibility(View.INVISIBLE);
+            findViewById(R.id.greeting).setVisibility(View.GONE);
+            LinearLayout buttons = findViewById(R.id.topButtons);
+            float statusUnit = getResources().getDisplayMetrics().widthPixels / 1920f;
+            buttons.setBackground(new LiquidSurface(density, true));
+            buttons.setAddStatesFromChildren(true);
+            buttons.setGravity(Gravity.CENTER_VERTICAL);
+            buttons.setPadding(Math.round(16 * statusUnit), 0, Math.round(6 * statusUnit), 0);
+            android.widget.TextClock statusClock = new android.widget.TextClock(this);
+            statusClock.setFormat12Hour("h:mma");
+            statusClock.setFormat24Hour("HH:mm");
+            statusClock.setTextSize(TypedValue.COMPLEX_UNIT_PX, 26 * statusUnit);
+            statusClock.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+            statusClock.setTextColor(0xD9FFFFFF);
+            statusClock.setIncludeFontPadding(false);
+            statusClock.setGravity(Gravity.CENTER_VERTICAL);
+            statusClock.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            buttons.addView(statusClock, 0, new LinearLayout.LayoutParams(0, -1, 1f));
+            LinearLayout.LayoutParams gearParams = (LinearLayout.LayoutParams) btnSettings.getLayoutParams();
+            gearParams.width = Math.round(48 * statusUnit);
+            gearParams.height = Math.round(48 * statusUnit);
+            gearParams.setMarginStart(Math.round(8 * statusUnit));
+            btnSettings.setLayoutParams(gearParams);
+            btnSettings.setBackground(null);
+            btnSettings.setPadding(0, 0, 0, 0);
+            TextView profileButton = (TextView) btnSettings;
+            profileButton.setCompoundDrawableTintList(null);
+            profileButton.setCompoundDrawablePadding(0);
+            Drawable profileIcon = getDrawable(R.drawable.ic_liquid_profile);
+            profileIcon.setBounds(0, 0, gearParams.width, gearParams.height);
+            profileButton.setCompoundDrawables(profileIcon, null, null, null);
+            profileButton.setContentDescription(getString(R.string.liquid_profile_title));
+            profileButton.setOnClickListener(v -> showControlCenter());
+            RelativeLayout.LayoutParams buttonParams = (RelativeLayout.LayoutParams) buttons.getLayoutParams();
+            buttonParams.removeRule(RelativeLayout.ALIGN_BOTTOM);
+            buttonParams.removeRule(RelativeLayout.ALIGN_TOP);
+            buttonParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+            buttonParams.width = Math.round(192 * statusUnit);
+            buttonParams.height = Math.round(60 * statusUnit);
+            buttonParams.topMargin = Math.round(50 * statusUnit) - ((View) buttons.getParent().getParent()).getPaddingTop();
+            buttonParams.setMarginEnd(Math.round(-16 * statusUnit));
+            buttonParams.bottomMargin = 0;
+            buttons.setLayoutParams(buttonParams);
+            btnSettings.setOnFocusChangeListener((view, focused) -> {
+                statusClock.setTextColor(focused ? 0xFF202024 : 0xD9FFFFFF);
+                buttons.animate().scaleX(focused ? 1.04f : 1f).scaleY(focused ? 1.04f : 1f)
+                        .setDuration(reducedMotion ? Motion.REDUCED_MS : 160).start();
+            });
+        }
         if (advancedEffects) {
             for (View button : new View[]{btnInputs, btnWifi, btnReorder, btnLibraryTop, btnSettings}) {
+                if (liquidGlass && button == btnSettings) continue;
                 button.setOnFocusChangeListener((view, focused) -> view.animate()
                         .scaleX(focused ? 1.04f : 1f).scaleY(focused ? 1.04f : 1f)
                         .setDuration(reducedMotion ? Motion.REDUCED_MS : 160).start());
@@ -860,6 +953,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PROFILE_ACCOUNT_REQUEST) {
+            if (resultCode == RESULT_OK && data != null) {
+                String name = data.getStringExtra(AccountManager.KEY_ACCOUNT_NAME);
+                String type = data.getStringExtra(AccountManager.KEY_ACCOUNT_TYPE);
+                if (!TextUtils.isEmpty(name) && "com.google".equals(type)) {
+                    getSharedPreferences("profile", MODE_PRIVATE).edit().putString("selected_account", name).apply();
+                    root.post(this::showProfilePanel);
+                }
+            }
+            return;
+        }
         if (requestCode == LAUNCHER_SETTINGS_REQUEST && resultCode == RESULT_OK
                 && data != null && data.getBooleanExtra(LauncherSettingsActivity.EXTRA_REORDER, false)) {
             getIntent().putExtra(LauncherSettingsActivity.EXTRA_REORDER, true);
@@ -1420,7 +1524,81 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     @Override
     public void onBackPressed() {
-        // Home screen: Back goes nowhere.
+        if (liquidGridExpanded && openPopup == null && !reordering) {
+            liquidGridExpanded = false;
+            updateGridHeader(true);
+            wallpaperPlayer.setGridExpanded(false, animations && !reducedMotion);
+            grid.stopScroll();
+            focusTile(lastFocused % COLUMNS);
+            grid.postDelayed(() -> {
+                if (!liquidGridExpanded) grid.setPadding(grid.getPaddingLeft(), grid.getPaddingTop(),
+                        grid.getPaddingRight(), liquidGridBottomPadding);
+            }, animations && !reducedMotion ? 700 : 0);
+        }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (LiquidStyle.enabled(this) && dockRow && !reordering && openPopup == null && grid != null) {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                gridSwipeX = event.getX();
+                gridSwipeY = event.getY();
+                gridSwipeConsumed = false;
+            } else if (event.getActionMasked() == MotionEvent.ACTION_MOVE && !liquidGridExpanded
+                    && gridSwipeY - event.getY() > 48 * density
+                    && gridSwipeY - event.getY() > Math.abs(event.getX() - gridSwipeX) * 1.2f) {
+                MotionEvent cancel = MotionEvent.obtain(event);
+                cancel.setAction(MotionEvent.ACTION_CANCEL);
+                super.dispatchTouchEvent(cancel);
+                cancel.recycle();
+                expandLiquidGrid();
+                gridSwipeConsumed = true;
+                return true;
+            }
+            if (gridSwipeConsumed) return true;
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    private void expandLiquidGrid() {
+        if (liquidGridExpanded) return;
+        liquidGridExpanded = true;
+        updateGridHeader(true);
+        // Even a short app collection must have enough trailing room to lift its first row to the top.
+        grid.setPadding(grid.getPaddingLeft(), grid.getPaddingTop(), grid.getPaddingRight(),
+                Math.max(liquidGridBottomPadding, grid.getHeight()));
+        wallpaperPlayer.setGridExpanded(true, animations && !reducedMotion);
+        grid.stopScroll();
+        RecyclerView.ViewHolder first = grid.findViewHolderForAdapterPosition(0);
+        if (first == null) return;
+        int[] location = new int[2];
+        grid.getLocationOnScreen(location);
+        int dy = first.itemView.getTop() + location[1]
+                - Math.round(getResources().getDisplayMetrics().heightPixels * (74f / 1080f));
+        if (!animations || reducedMotion) grid.scrollBy(0, dy);
+        else grid.smoothScrollBy(0, dy, LiquidStyle.EASE, 650);
+    }
+
+    private void updateGridHeader(boolean animate) {
+        ViewGroup top = findViewById(R.id.topButtons);
+        top.animate().cancel();
+        top.setDescendantFocusability(liquidGridExpanded
+                ? ViewGroup.FOCUS_BLOCK_DESCENDANTS : ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        top.setImportantForAccessibility(liquidGridExpanded
+                ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        top.setVisibility(View.VISIBLE);
+        float alpha = liquidGridExpanded ? 0f : 1f;
+        float lift = liquidGridExpanded ? -8 * density : 0f;
+        if (animate && animations && !reducedMotion) {
+            top.animate().alpha(alpha).translationY(lift).setDuration(400)
+                    .setInterpolator(LiquidStyle.EASE).withEndAction(() -> {
+                        if (liquidGridExpanded) top.setVisibility(View.INVISIBLE);
+                    }).start();
+        } else {
+            top.setAlpha(alpha);
+            top.setTranslationY(lift);
+            if (liquidGridExpanded) top.setVisibility(View.INVISIBLE);
+        }
     }
 
     // ---- glass highlight -------------------------------------------------------------------------
@@ -1434,6 +1612,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         appLibrary = new AppLibraryDialog(this, animations, reducedMotion, adapter::containsPackage, () -> reloadApps(false), () -> {
             appLibrary = null;
             openPopup = null;
+            restoreHomeAfterMenu();
             if (libraryFromTopBar) {
                 libraryFromTopBar = false;
                 btnLibraryTop.requestFocus();
@@ -1469,7 +1648,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         float w = card.getWidth() * scale + 2 * pad;
         float h = card.getHeight() * scale + 2 * pad;
         float x = r.exactCenterX() - w / 2f;
-        float y = r.exactCenterY() - h / 2f - (advancedEffects ? 4f * density : 0f);
+        float y = r.exactCenterY() - h / 2f - (advancedEffects && !LiquidStyle.enabled(this) ? 4f * density : 0f);
 
         ViewGroup.LayoutParams lp = glass.getLayoutParams();
         if (lp.width != (int) w || lp.height != (int) h || card.getWidth() != glassCardW) {
@@ -1477,7 +1656,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             lp.height = (int) h;
             glass.setLayoutParams(lp);
             // GlassView draws its slab inset by pad, i.e. exactly over the zoomed tile: same corners as the tile.
-            glass.setRadius(AppAdapter.cornerRadius(card.getWidth(), density) * scale);
+            glass.setRadius((LiquidStyle.enabled(this) ? LiquidStyle.radius(card.getWidth(), density)
+                    : AppAdapter.cornerRadius(card.getWidth(), density)) * scale);
         }
         glassCardW = card.getWidth();
         glassTargetX = x;
@@ -1507,7 +1687,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             springY.animateToFinalPosition(y - glassScrollShift);
         }
         View item = (View) card.getParent();
-        if (dockRow && position < COLUMNS) {
+        if (dockRow && position < COLUMNS && !liquidGridExpanded) {
             // Dock: park it at the bottom of the screen and show the top shelf for this app.
             int decoratedTop = item.getTop() - (int) (6 * density);
             int dy = decoratedTop - grid.getPaddingTop();
@@ -1516,6 +1696,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             boolean scroll = Math.abs(dy) > (int) (8 * density);
             if (scroll) {
                 if (!animations || reducedMotion) grid.scrollBy(0, dy);
+                else if (LiquidStyle.enabled(this)) grid.smoothScrollBy(0, dy, LiquidStyle.EASE, 650);
                 else grid.smoothScrollBy(0, dy);
             }
             showHero(position, scroll ? r.top - dy : r.top);
@@ -1550,7 +1731,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private void showHero(int position, float dockTopInRoot) {
         String label = adapter.labelAt(position);
         int color = adapter.ambientColorAt(position);
-        float y = dockTopInRoot - 14 * density - 26 * density - hero.getHeight();
+        final float y = LiquidStyle.enabled(this)
+                ? Math.max(82 * density, (dockTopInRoot + 60 * density - hero.getHeight()) * 0.43f)
+                : dockTopInRoot - 14 * density - 26 * density - hero.getHeight();
         boolean changed = !label.contentEquals(heroName.getText());
         if (cinematic) showHeroArt(position);
 
@@ -1617,8 +1800,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** The parts that never change: a larger name, the meta line and the dots, the artwork and the scrim. */
     private void setUpCinematicShelf() {
-        heroName.setTextSize(TypedValue.COMPLEX_UNIT_SP, 68f);
+        heroName.setTextSize(TypedValue.COMPLEX_UNIT_SP, LiquidStyle.enabled(this) ? 58f : 68f);
         heroName.setLetterSpacing(-0.025f);
+        // tvOS Home leaves the screen to the full-bleed backdrop. No invented title/card above the Dock.
+        if (LiquidStyle.enabled(this)) hero.setVisibility(View.GONE);
         heroMeta.setVisibility(View.INVISIBLE);   // keeps its height, so the name does not jump when it fills in
         heroDots.setVisibility(View.VISIBLE);
         heroArt.setVisibility(View.VISIBLE);
@@ -1639,6 +1824,15 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         Canvas canvas = new Canvas(bmp);
         boolean rtl = getResources().getBoolean(R.bool.rtl_menu_bar);
         Paint paint = new Paint();
+        if (LiquidStyle.enabled(this)) {
+            paint.setShader(new LinearGradient(0, 0, 0, h,
+                    new int[]{0x20000000, 0x00000000, 0x20000000, 0x60000000},
+                    new float[]{0f, 0.3f, 0.65f, 1f}, Shader.TileMode.CLAMP));
+            canvas.drawRect(0, 0, w, h, paint);
+            BitmapDrawable shade = new BitmapDrawable(getResources(), bmp);
+            shade.setGravity(Gravity.FILL);
+            return shade;
+        }
         paint.setShader(new LinearGradient(rtl ? w : 0, 0, rtl ? 0 : w, 0,
                 new int[]{0xD1060406, 0x59060406, 0x00060406}, new float[]{0f, 0.42f, 0.7f}, Shader.TileMode.CLAMP));
         canvas.drawRect(0, 0, w, h, paint);
@@ -1653,6 +1847,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** Swaps the backdrop to this app's artwork: fade out, swap, fade in, the way the shelf's name changes. */
     private void showHeroArt(int position) {
+        if (LiquidStyle.enabled(this)) {
+            // This preview uses the wallpaper as its backdrop. Never fade enlarged app artwork
+            // back in when the same tile regains focus after a menu or grid navigation.
+            heroArt.animate().cancel();
+            heroArt.setAlpha(0f);
+            heroArt.setVisibility(View.GONE);
+            return;
+        }
         String key = adapter.keyAt(position);
         if (key == null) return;
         heroArt.animate().cancel();
@@ -1836,7 +2038,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void hideHero() {
-        if (!heroShown) return;
+        if (!heroShown) { return; }
         stopAmbientAnimation();
         hero.animate().cancel();
         ambient.animate().cancel();
@@ -1854,7 +2056,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void hideGlass() {
-        if (!glassShown) return;
+        if (!glassShown) { return; }
         glassShown = false;
         glass.animate().cancel();
         if (animations && !reducedMotion) glass.animate().alpha(0f).setDuration(160).start();
@@ -2056,6 +2258,18 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     public boolean onTileVerticalKey(int position, int keyCode) {
         int count = adapter.appCount();
         int target;
+        if (LiquidStyle.enabled(this) && dockRow && !liquidGridExpanded && position < COLUMNS
+                && (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN)) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                updateGridHeader(false);
+                findViewById(R.id.btnSettings).requestFocus();
+            } else expandLiquidGrid();
+            return true;
+        }
+        if (liquidGridExpanded && position < COLUMNS && keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            onBackPressed();
+            return true;
+        }
         // Horizontal: swallow the key at a row's ends so focus never wraps to the next row or
         // escapes up into the top bar. Mid-row moves fall through to the default focus search.
         if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
@@ -2200,6 +2414,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private final Runnable clockCheck = this::updateClockVisibility;
 
     private void updateClockVisibility() {
+        if (LiquidStyle.enabled(this)) {
+            clockBlock.setVisibility(View.INVISIBLE);
+            handler.removeCallbacks(clockCheck);
+            return;
+        }
         boolean valid = System.currentTimeMillis() >= TIME_VALID_AFTER_MS;
         clockBlock.setVisibility(valid ? View.VISIBLE : View.INVISIBLE);
         handler.removeCallbacks(clockCheck);
@@ -2770,7 +2989,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (tuned.resolveActivity(getPackageManager()) != null) liveTv = tuned;
         }
         if (liveTv != null) {
-            if (rows.getChildCount() > 0) addSeparator(rows);
+            if (rows.getChildCount() > 0) { addSeparator(rows); }
             final Intent liveTvIntent = liveTv;
             addInputRow(rows, popup, R.drawable.ic_livetv, getString(R.string.live_tv), -1, () -> open(liveTvIntent));
         }
@@ -2789,6 +3008,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private PopupWindow glassPopup(View panel, int width) {
+        if (LiquidStyle.enabled(this)) hideHomeForMenu();
+        if (LiquidStyle.enabled(this)) panel.setBackground(new LiquidSurface(density, false));
         final PopupWindow popup = new PopupWindow(panel, width, ViewGroup.LayoutParams.WRAP_CONTENT, true);
         popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));   // needed for Back to dismiss
         popup.setOutsideTouchable(true);
@@ -2796,6 +3017,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         popup.setElevation(0f);
         popup.setOnDismissListener(() -> {
             if (openPopup == popup) openPopup = null;
+            restoreHomeAfterMenu();
         });
         openPopup = popup;
         return popup;
@@ -2847,6 +3069,185 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     // ---- launcher settings and module cards -------------------------------------------------------
+
+    /** Only user-visible accounts are read; no credentials, tokens or account permissions are requested. */
+    private Account profileAccount() {
+        try {
+            Account[] accounts = AccountManager.get(this).getAccountsByType("com.google");
+            String selected = getSharedPreferences("profile", MODE_PRIVATE).getString("selected_account", "");
+            for (Account account : accounts) if (account.name.equals(selected)) return account;
+            return accounts.length == 0 ? null : accounts[0];
+        } catch (SecurityException ignored) {
+            return null;
+        }
+    }
+
+    private void chooseProfileAccount() {
+        Intent choose = AccountManager.newChooseAccountIntent(profileAccount(), null,
+                new String[]{"com.google"}, null, null, null, null);
+        // Google's TV picker delegates to launcherx; the framework chooser also works with a custom Home.
+        choose.setClassName("android", "android.accounts.ChooseTypeAndAccountActivity");
+        try {
+            startActivityForResult(choose, PROFILE_ACCOUNT_REQUEST);
+        } catch (ActivityNotFoundException | SecurityException unavailable) {
+            open(systemIntent(Settings.ACTION_SYNC_SETTINGS));
+        }
+    }
+
+    private void showProfilePanel() {
+        if (isFinishing() || isDestroyed()) return;
+        if (openPopup != null) openPopup.dismiss();
+        View anchor = findViewById(R.id.btnSettings);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding((int) (12 * density), (int) (18 * density), (int) (12 * density), (int) (12 * density));
+        PopupWindow popup = glassPopup(panel, (int) (300 * density));
+        panel.setBackground(new LiquidSurface(density, false));
+        Account selected = profileAccount();
+        java.util.List<Account> accounts = new java.util.ArrayList<>();
+        try {
+            java.util.Collections.addAll(accounts, AccountManager.get(this).getAccountsByType("com.google"));
+        } catch (SecurityException ignored) { }
+        LinearLayout row = null;
+        View initialFocus = null;
+        for (int i = 0; i <= accounts.size(); i++) {
+            if (i % 2 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setClipChildren(false);
+                row.setClipToPadding(false);
+                panel.addView(row, new LinearLayout.LayoutParams(-1, -2));
+            }
+            Account account = i < accounts.size() ? accounts.get(i) : null;
+            boolean active = account != null && selected != null && account.name.equals(selected.name);
+            View tile = profileCircle(account, active, popup);
+            row.addView(tile, new LinearLayout.LayoutParams(0, -2, 1));
+            if (initialFocus == null || active) initialFocus = tile;
+            if (i == accounts.size() && i % 2 == 0) row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        }
+        dropIn(popup, panel, anchor, Gravity.END);
+        if (initialFocus != null) initialFocus.requestFocus();
+    }
+
+    private View profileCircle(Account account, boolean selected, PopupWindow popup) {
+        LinearLayout tile = new LinearLayout(this);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setClipChildren(false);
+        tile.setClipToPadding(false);
+        tile.setGravity(Gravity.CENTER);
+        tile.setPadding((int) (6 * density), (int) (8 * density), (int) (6 * density), (int) (12 * density));
+        tile.setFocusable(true);
+        tile.setClickable(true);
+        android.widget.FrameLayout portrait = new android.widget.FrameLayout(this);
+        int size = Math.round(112 * density);
+        tile.addView(portrait, new LinearLayout.LayoutParams(size, size));
+        TextView initials = new TextView(this);
+        String name = account == null ? getString(R.string.liquid_add_user) : account.name;
+        String local = account == null ? "" : name.split("@", 2)[0];
+        String[] parts = local.split("[._ -]+");
+        String letters = local.isEmpty() ? "?" : local.substring(0, 1);
+        if (parts.length > 1 && !parts[parts.length - 1].isEmpty()) letters += parts[parts.length - 1].substring(0, 1);
+        initials.setText(account == null ? "+" : letters.toUpperCase(java.util.Locale.ROOT));
+        initials.setTextSize(account == null ? 52 : 42);
+        initials.setTextColor(Color.WHITE);
+        initials.setGravity(Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable circle = new android.graphics.drawable.GradientDrawable();
+        circle.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        circle.setColor(account == null ? 0xB32A3440 : 0xCC848995);
+        circle.setStroke(Math.max(1, (int) density), 0x55FFFFFF);
+        initials.setBackground(circle);
+        portrait.addView(initials, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        if (selected) {
+            TextView check = new TextView(this);
+            check.setText("✓");
+            check.setTextSize(20);
+            check.setTextColor(Color.WHITE);
+            check.setGravity(Gravity.CENTER);
+            android.graphics.drawable.GradientDrawable badge = new android.graphics.drawable.GradientDrawable();
+            badge.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+            badge.setColor(0xFF32D74B);
+            check.setBackground(badge);
+            portrait.addView(check, new android.widget.FrameLayout.LayoutParams((int) (27 * density),
+                    (int) (27 * density), Gravity.TOP | Gravity.END));
+        }
+        TextView label = new TextView(this);
+        label.setText(account == null ? name : local);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(15);
+        label.setGravity(Gravity.CENTER);
+        label.setSingleLine(true);
+        label.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams labelSize = new LinearLayout.LayoutParams(-1, -2);
+        labelSize.topMargin = (int) (8 * density);
+        tile.addView(label, labelSize);
+        tile.setContentDescription(name + (selected ? ", " + getString(R.string.liquid_selected_profile) : ""));
+        tile.setOnFocusChangeListener((v, focused) -> {
+            circle.setStroke(Math.max(1, (int) ((focused ? 3 : 1) * density)), focused ? Color.WHITE : 0x55FFFFFF);
+            portrait.animate().scaleX(focused ? 1.06f : 1).scaleY(focused ? 1.06f : 1)
+                    .setDuration(reducedMotion ? 0 : 180).setInterpolator(LiquidStyle.EASE).start();
+        });
+        tile.setOnClickListener(v -> {
+            popup.dismiss();
+            if (account == null) chooseProfileAccount();
+            else {
+                getSharedPreferences("profile", MODE_PRIVATE).edit().putString("selected_account", account.name).apply();
+                root.post(this::showProfilePanel);
+            }
+        });
+        return tile;
+    }
+
+    private void showControlCenter() {
+        if (isFinishing() || isDestroyed()) return;
+        if (openPopup != null) openPopup.dismiss();
+        CharSequence network = wifiIconOnly ? btnWifi.getContentDescription() : btnWifi.getText();
+        String networkLabel = TextUtils.isEmpty(network) ? getString(R.string.quick_network) : network.toString();
+        Runnable[] actions = {
+                () -> open(systemIntent(Settings.ACTION_DREAM_SETTINGS)),
+                this::openNetworkPill,
+                () -> root.post(this::showInputs),
+                () -> open(new Intent().setComponent(new ComponentName("com.android.tv.settings",
+                        "com.android.tv.settings.accessories.AddAccessoryActivity"))),
+                () -> open(systemIntent(Settings.ACTION_SETTINGS)),
+                this::onLibraryRequested,
+                () -> open(systemIntent(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
+                () -> startActivityForResult(new Intent(this, LauncherSettingsActivity.class), LAUNCHER_SETTINGS_REQUEST),
+                () -> open(new Intent(Intent.ACTION_SEARCH_LONG_PRESS))
+        };
+        LiquidControlCenter center = new LiquidControlCenter(this, networkLabel, animations && !reducedMotion,
+                () -> root.post(this::showProfilePanel), actions);
+        hideHomeForMenu();
+        PopupWindow popup = center.show(root);
+        openPopup = popup;
+        popup.setOnDismissListener(() -> {
+            if (openPopup == popup) openPopup = null;
+            restoreHomeAfterMenu();
+        });
+    }
+
+    android.graphics.Bitmap glassBackdrop() {
+        return wallpaperPlayer == null ? null : wallpaperPlayer.glassBackdrop();
+    }
+
+    private void hideHomeForMenu() {
+        findViewById(R.id.topButtons).setVisibility(View.INVISIBLE);
+        grid.setVisibility(View.INVISIBLE);
+        hideGlass();
+        wallpaperPlayer.setGridExpanded(false, animations && !reducedMotion);
+    }
+
+    private void restoreHomeAfterMenu() {
+        if (!LiquidStyle.enabled(this)) return;
+        // A sibling popup is posted after dismissal; keep Home hidden across that handoff.
+        root.postDelayed(() -> {
+            if (openPopup != null || appLibrary != null || isFinishing() || isDestroyed()) return;
+            updateGridHeader(false);
+            grid.setVisibility(View.VISIBLE);
+            wallpaperPlayer.setGridExpanded(liquidGridExpanded, animations && !reducedMotion);
+            if (liquidGridExpanded) focusTile(lastFocused);
+            else findViewById(R.id.btnSettings).requestFocus();
+        }, 120);
+    }
 
     /** top_menu: the gear's dropdown, standing in for the Inputs, Wi-Fi and Settings pills. */
     private void showTopMenu() {
