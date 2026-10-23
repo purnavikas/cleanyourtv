@@ -476,6 +476,7 @@ final class AppLibraryDialog {
         if (spring != null) spring.cancel();
         View menuPanel = activity.getLayoutInflater().inflate(R.layout.popup_inputs, panel, false);
         LinearLayout rows = menuPanel.findViewById(R.id.rows);
+        if (LiquidStyle.enabled(activity)) LiquidOptionStyle.panel(menuPanel);
         PopupWindow menu = new PopupWindow(menuPanel, dp(220), ViewGroup.LayoutParams.WRAP_CONTENT, true);
         actionPopup = menu;
         menu.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -498,7 +499,7 @@ final class AppLibraryDialog {
                 Toast.makeText(activity, activity.getString(R.string.cant_open, label(app)), Toast.LENGTH_SHORT).show();
             }
         });
-        int menuWidth = dp(220);
+        int menuWidth = LiquidStyle.enabled(activity) ? LiquidOptionStyle.width(menuPanel) : dp(220);
         for (int i = 0; i < rows.getChildCount(); i++) {
             TextView title = rows.getChildAt(i).findViewById(R.id.title);
             menuWidth = Math.max(menuWidth, (int) Math.ceil(title.getPaint().measureText(title.getText().toString())) + dp(58));
@@ -532,6 +533,8 @@ final class AppLibraryDialog {
         row.findViewById(R.id.icon).setVisibility(View.GONE);
         row.findViewById(R.id.dot).setVisibility(View.GONE);
         row.findViewById(R.id.status).setVisibility(View.GONE);
+        if (LiquidStyle.enabled(activity)) LiquidOptionStyle.row(row,
+                label == R.string.library_app_info ? R.drawable.ic_option_info : R.drawable.ic_apps);
         row.setOnClickListener(v -> action.run());
         rows.addView(row);
         row.setOnKeyListener((v, key, event) -> {

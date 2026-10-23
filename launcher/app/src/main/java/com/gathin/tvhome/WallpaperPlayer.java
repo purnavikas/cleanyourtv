@@ -268,6 +268,9 @@ final class WallpaperPlayer {
         current = bitmap;
         image.setImageBitmap(bitmap.image);
         if (softImage != null) softImage.setImageBitmap(bitmap.blur);
+        LiquidSurface.wallpaperChanged();
+        // Refresh again when the wallpaper crossfade settles, before releasing the old texture.
+        image.postDelayed(LiquidSurface::wallpaperChanged, 340);
         if (old != null && old != bitmap) image.postDelayed(old::recycle, 500);
     }
 

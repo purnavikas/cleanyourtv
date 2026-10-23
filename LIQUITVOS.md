@@ -12,13 +12,29 @@ Tested on Sony BRAVIA 4K VH22, Android TV 12 (SDK 31), 1920 × 1080 UI. Other te
 - Circular launcher-profile selector with account initials, selected checkmark and Add User through Android's account chooser.
 - Local Pictures wallpaper shuffle, one-minute rotation and automatic rescanning for added photos; no Mac or cloud sync required.
 - Home dock stays hidden while Control Center, Profile or their option popups are open. Cached wallpaper blur is sampled inside the glass while the surrounding wallpaper stays sharp.
+- Matching glass option menus for app cards and Inputs, with leading icons and white focus pills. Glass refreshes with each wallpaper change without a fixed dark overlay.
+- App layout editing keeps the grid visible while moving cards.
 - Reduced-motion support, existing launcher app management and native app opening retained.
 
 ## Real-TV screenshots
 
-![Expanded app grid](docs/liquitvos/apps.jpg)
+### Home screen landing page
 
-![Control Center](docs/liquitvos/controls.jpg)
+![Home screen landing page, full 1920 by 1080 capture](docs/liquitvos/home.jpg)
+
+### Expanded apps view
+
+![Expanded app grid, full 1920 by 1080 capture](docs/liquitvos/apps.jpg)
+
+### Action Center
+
+![Action Center, full 1920 by 1080 capture](docs/liquitvos/controls.jpg)
+
+### Profile switcher
+
+![Profile switcher, full 1920 by 1080 capture with account name obscured](docs/liquitvos/profile.jpg)
+
+All four screenshots retain the complete TV frame. The account name in the profile screenshot is obscured for privacy.
 
 The photographs shown are personal wallpaper choices, not bundled or licensed as part of this project. Add your own images. Screenshots show the design on the tested television; installed apps differ by device.
 

@@ -21,6 +21,7 @@ final class LiquidControlCenter {
     private final boolean motion;
     private final PopupWindow popup;
     private final LinearLayout panel;
+    private final View initialFocus;
     private final ColorStateList ink = new ColorStateList(new int[][]{
             {android.R.attr.state_focused}, {}}, new int[]{0xFF16161A, Color.WHITE});
 
@@ -32,7 +33,7 @@ final class LiquidControlCenter {
         panel = column();
         panel.setClipChildren(false);
         panel.setClipToPadding(false);
-        popup = new PopupWindow(panel, px(440), ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        popup = new PopupWindow(panel, px(438), ViewGroup.LayoutParams.WRAP_CONTENT, true);
         popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         popup.setOutsideTouchable(true);
         popup.setElevation(0);
@@ -47,30 +48,31 @@ final class LiquidControlCenter {
         clock.setTextColor(Color.WHITE);
         clock.setIncludeFontPadding(false);
         tabs.addView(clock, new LinearLayout.LayoutParams(0, px(60), 1));
-        clock.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        clock.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         View controls = tile(R.drawable.ic_cc_controls, context.getString(R.string.cc_controls), true, true, null);
         android.graphics.drawable.GradientDrawable selectedTab = new android.graphics.drawable.GradientDrawable();
         selectedTab.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        selectedTab.setColor(0xF2FFFFFF);
+        selectedTab.setColor(0x50FFFFFF);
         controls.setBackground(selectedTab);
-        ((ImageView) ((ViewGroup) controls).getChildAt(0)).setImageTintList(ColorStateList.valueOf(0xFF16161A));
-        LinearLayout.LayoutParams tabSize = new LinearLayout.LayoutParams(px(60), px(60));
-        tabSize.setMarginStart(px(18));
+        ((ImageView) ((ViewGroup) controls).getChildAt(0)).setImageTintList(ColorStateList.valueOf(Color.WHITE));
+        LinearLayout.LayoutParams tabSize = new LinearLayout.LayoutParams(px(50), px(50));
+        tabSize.setMarginStart(px(20));
         tabs.addView(controls, tabSize);
         View avatar = tile(R.drawable.ic_liquid_profile, context.getString(R.string.liquid_profile_title), true, true, profile);
         ((ImageView) ((ViewGroup) avatar).getChildAt(0)).setImageTintList(null);
-        LinearLayout.LayoutParams avatarSize = new LinearLayout.LayoutParams(px(60), px(60));
-        avatarSize.setMarginStart(px(18));
+        LinearLayout.LayoutParams avatarSize = new LinearLayout.LayoutParams(px(44), px(44));
+        avatarSize.setMarginStart(px(20));
         tabs.addView(avatar, avatarSize);
         panel.addView(tabs);
-        space(panel, 24);
+        space(panel, 20);
 
         LinearLayout top = row();
         View saver = tile(R.drawable.ic_picture, context.getString(R.string.cc_screensaver), false, false, actions[0]);
+        saver.setFocusableInTouchMode(true);
         top.addView(saver, new LinearLayout.LayoutParams(px(210), px(210)));
         LinearLayout right = column();
         LinearLayout.LayoutParams rightSize = new LinearLayout.LayoutParams(px(210), px(210));
-        rightSize.setMarginStart(px(20));
+        rightSize.setMarginStart(px(18));
         top.addView(right, rightSize);
         right.addView(tile(R.drawable.ic_wifi, network, true, false, actions[1]), new LinearLayout.LayoutParams(-1, px(96)));
         space(right, 18);
@@ -80,7 +82,7 @@ final class LiquidControlCenter {
         LinearLayout middle = row();
         middle.addView(tile(R.drawable.ic_cc_bluetooth, context.getString(R.string.cc_bluetooth), true, false, actions[3]), new LinearLayout.LayoutParams(px(210), px(96)));
         LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(px(210), px(96));
-        second.setMarginStart(px(20));
+        second.setMarginStart(px(18));
         middle.addView(tile(R.drawable.ic_settings, context.getString(R.string.settings), true, false, actions[4]), second);
         panel.addView(middle);
         space(panel, 18);
@@ -98,13 +100,14 @@ final class LiquidControlCenter {
         saver.setNextFocusUpId(controls.getId());
         controls.setNextFocusDownId(saver.getId());
         avatar.setNextFocusDownId(right.getChildAt(0).getId());
-        controls.requestFocus();
+        initialFocus = saver;
     }
 
     PopupWindow show(View root) {
         panel.setAlpha(motion ? 0 : 1);
         panel.setTranslationX(motion ? px(16) : 0);
-        popup.showAtLocation(root, Gravity.TOP | Gravity.END, px(50), px(50));
+        popup.showAtLocation(root, Gravity.TOP | Gravity.END, px(73), px(54));
+        initialFocus.requestFocus();
         if (motion) panel.animate().alpha(1).translationX(0).setDuration(220).setInterpolator(LiquidStyle.EASE).start();
         return popup;
     }
@@ -113,8 +116,10 @@ final class LiquidControlCenter {
         LinearLayout tile = pill && !iconOnly ? row() : column();
         tile.setId(View.generateViewId());
         tile.setGravity(Gravity.CENTER);
-        tile.setPadding(px(12), px(10), px(12), px(10));
-        tile.setBackground(new LiquidSurface(density, pill));
+        boolean statusTab = icon == R.drawable.ic_cc_controls || icon == R.drawable.ic_liquid_profile;
+        tile.setPadding(px(statusTab ? 2 : 16), px(statusTab ? 2 : 10),
+                px(statusTab ? 2 : 16), px(statusTab ? 2 : 10));
+        tile.setBackground(LiquidSurface.controlCenter(density, pill));
         tile.setFocusable(true);
         tile.setClickable(true);
         tile.setContentDescription(label);
@@ -122,17 +127,20 @@ final class LiquidControlCenter {
         glyph.setImageResource(icon);
         glyph.setDuplicateParentStateEnabled(true);
         glyph.setImageTintList(ink);
-        tile.addView(glyph, new LinearLayout.LayoutParams(px(pill ? 40 : 82), px(pill ? 40 : 82)));
+        if (icon == R.drawable.ic_wifi) glyph.setImageTintList(new ColorStateList(new int[][]{
+                {android.R.attr.state_focused}, {}}, new int[]{0xFF16161A, 0xFF00BFFF}));
+        int glyphSize = statusTab ? (icon == R.drawable.ic_cc_controls ? 30 : 40) : pill ? 44 : 104;
+        tile.addView(glyph, new LinearLayout.LayoutParams(px(glyphSize), px(glyphSize)));
         if (!iconOnly) {
             TextView title = new TextView(context);
             title.setText(label);
-            title.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(23));
+            title.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(pill ? 25 : 26));
             title.setTextColor(ink);
             title.setDuplicateParentStateEnabled(true);
             title.setGravity(pill ? Gravity.CENTER_VERTICAL : Gravity.CENTER);
             title.setMaxLines(2);
             LinearLayout.LayoutParams labelSize = new LinearLayout.LayoutParams(pill ? 0 : -1, -2, pill ? 1 : 0);
-            if (pill) labelSize.setMarginStart(px(12)); else labelSize.topMargin = px(14);
+            if (pill) labelSize.setMarginStart(px(12)); else labelSize.topMargin = px(16);
             tile.addView(title, labelSize);
         }
         tile.setOnFocusChangeListener((view, focused) -> view.animate()

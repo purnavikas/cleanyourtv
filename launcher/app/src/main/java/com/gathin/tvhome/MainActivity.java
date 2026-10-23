@@ -1283,6 +1283,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     /** The start shared by reorder and edit-dock mode. False when there is nothing to move. */
     private boolean beginReorder() {
         if (adapter.movableCount() < 2) return false;
+        if (LiquidStyle.enabled(this)) {
+            grid.setVisibility(View.VISIBLE);
+            if (!liquidGridExpanded) expandLiquidGrid();
+            updateGridHeader(false);
+        }
         // Before the reload below: once it has dropped the empty slots, the dock row also shows grid apps.
         dockInSession = new HashSet<>();
         dockedAtStart = adapter.dockFilled();
@@ -3000,7 +3005,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
         // Fit the widest row: TVs that report a status on every port (Sony) would otherwise squeeze the names out.
         panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-        popup.setWidth(Math.max(width, Math.min(panel.getMeasuredWidth(), (int) (360 * density))));
+        popup.setWidth(Math.max(popup.getWidth(), Math.max(width,
+                Math.min(panel.getMeasuredWidth(), (int) (360 * density)))));
 
         int alignment = getResources().getBoolean(R.bool.rtl_menu_bar) != underGear ? Gravity.END : Gravity.START;
         dropIn(popup, panel, anchor, alignment);
@@ -3008,8 +3014,19 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private PopupWindow glassPopup(View panel, int width) {
-        if (LiquidStyle.enabled(this)) hideHomeForMenu();
-        if (LiquidStyle.enabled(this)) panel.setBackground(new LiquidSurface(density, false));
+        return glassPopup(panel, width, true);
+    }
+
+    private PopupWindow glassPopup(View panel, int width, boolean hideHome) {
+        if (hideHome && LiquidStyle.enabled(this)) hideHomeForMenu();
+        if (LiquidStyle.enabled(this)) {
+            View rows = panel.findViewById(R.id.rows);
+            if (rows != null) {
+                LiquidOptionStyle.panel(panel);
+                rows.setTag("liquid_app_options");
+                width = Math.max(width, LiquidOptionStyle.width(panel));
+            } else panel.setBackground(new LiquidSurface(density, false));
+        }
         final PopupWindow popup = new PopupWindow(panel, width, ViewGroup.LayoutParams.WRAP_CONTENT, true);
         popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));   // needed for Back to dismiss
         popup.setOutsideTouchable(true);
@@ -3017,7 +3034,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         popup.setElevation(0f);
         popup.setOnDismissListener(() -> {
             if (openPopup == popup) openPopup = null;
-            restoreHomeAfterMenu();
+            if (hideHome) restoreHomeAfterMenu();
         });
         openPopup = popup;
         return popup;
@@ -3061,6 +3078,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             status.setVisibility(View.GONE);
             dot.setVisibility(View.GONE);
         }
+        if ("liquid_app_options".equals(rows.getTag())) LiquidOptionStyle.row(row, iconRes);
         row.setOnClickListener(v -> {
             popup.dismiss();
             action.run();
@@ -3241,6 +3259,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         // A sibling popup is posted after dismissal; keep Home hidden across that handoff.
         root.postDelayed(() -> {
             if (openPopup != null || appLibrary != null || isFinishing() || isDestroyed()) return;
+            if (reordering) return;
             updateGridHeader(false);
             grid.setVisibility(View.VISIBLE);
             wallpaperPlayer.setGridExpanded(liquidGridExpanded, animations && !reducedMotion);
@@ -3310,7 +3329,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (key == null || pkg == null || pkg.equals(getPackageName())) return;
         View panel = getLayoutInflater().inflate(R.layout.popup_inputs, root, false);
         LinearLayout rows = panel.findViewById(R.id.rows);
-        PopupWindow popup = glassPopup(panel, (int) (200 * density));
+        PopupWindow popup = glassPopup(panel, (int) (200 * density), false);
+        if (LiquidStyle.enabled(this)) {
+            float unit = getResources().getDisplayMetrics().widthPixels / 1920f;
+            rows.setTag("liquid_app_options");
+            LiquidOptionStyle.panel(panel);
+        }
         if (dockRow && position < adapter.movableCount()) {
             boolean inDock = position < COLUMNS;
             addSettingsMenuRow(rows, popup, inDock ? R.string.tile_replace_in_dock : R.string.tile_add_to_dock,
@@ -3331,12 +3355,25 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         addSettingsMenuRow(rows, popup, R.string.library_app_info, () -> open(new Intent(
                 Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg))));
         panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-        popup.setWidth(Math.max((int) (200 * density), panel.getMeasuredWidth()));
+        popup.setWidth(LiquidStyle.enabled(this)
+                ? LiquidOptionStyle.width(panel)
+                : Math.max((int) (200 * density), panel.getMeasuredWidth()));
         // Dock tiles sit near the bottom of the screen: open the menu above the tile when it would not fit below.
         int[] at = new int[2];
         card.getLocationInWindow(at);
         int gap = (int) (10 * density), height = panel.getMeasuredHeight();
-        if (at[1] + card.getHeight() + gap + height <= root.getHeight()) {
+        if (LiquidStyle.enabled(this)) {
+            float unit = getResources().getDisplayMetrics().widthPixels / 1920f;
+            int spacing = Math.round(16 * unit);
+            int bottom = at[1] + Math.round(card.getHeight() * card.getScaleY());
+            int y = bottom + spacing + height <= root.getHeight()
+                    ? bottom + spacing : Math.max(spacing, at[1] - spacing - height);
+            int x = Math.max(spacing, Math.min(at[0], root.getWidth() - popup.getWidth() - spacing));
+            panel.setAlpha(animations && !reducedMotion ? 0f : 1f);
+            popup.showAtLocation(root, Gravity.NO_GRAVITY, x, y);
+            panel.animate().alpha(1f).setDuration(animations && !reducedMotion ? 180 : 0)
+                    .setInterpolator(LiquidStyle.EASE).start();
+        } else if (at[1] + card.getHeight() + gap + height <= root.getHeight()) {
             dropIn(popup, panel, card, Gravity.START);
         } else {
             panel.setAlpha(0f);
@@ -3356,6 +3393,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         row.findViewById(R.id.dot).setVisibility(View.GONE);
         row.findViewById(R.id.status).setVisibility(View.GONE);
         ((TextView) row.findViewById(R.id.title)).setText(title);
+        if ("liquid_app_options".equals(rows.getTag())) {
+            if (title == R.string.tile_replace_in_dock) ((TextView) row.findViewById(R.id.title)).setText(R.string.liquid_replace_app);
+            LiquidOptionStyle.row(row, title == R.string.tile_move ? R.drawable.ic_reorder
+                    : title == R.string.library_app_info ? R.drawable.ic_option_info : R.drawable.ic_apps);
+        }
         row.setOnClickListener(v -> {
             popup.dismiss();
             action.run();
